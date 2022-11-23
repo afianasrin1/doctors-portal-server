@@ -3,7 +3,7 @@ const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 5000;
 
 const app = express();
@@ -48,7 +48,23 @@ async function run() {
     const doctorsCollection = client
       .db("doctorsPortal")
       .collection("doctorList");
+    const paymentsCollection = client
+      .db("doctorsPortal")
+      .collection("payments");
 
+    //middle Ware for Admin
+    //note:make sure you use verifyAdmin after verifyJWT
+    const verifyAdmin = async (req, res, next) => {
+      // console.log("inside the verifyAdmin", req.decoded.email);
+      const decodedEmail = req.decoded.email;
+      const query = { email: decodedEmail };
+      const user = await usersCollection.findOne(query);
+
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
     // Use Aggregate to query multiple collection and then merge data
     app.get("/appointmentOptions", async (req, res) => {
       const date = req.query.date;
@@ -152,6 +168,20 @@ async function run() {
       const bookings = await bookingsCollection.find(query).toArray();
       res.send(bookings);
     });
+    //specific id dhore api payment er janno
+    app.get("/bookings/:id", async (req, res) => {
+      // const email = req.query.email;
+      // const decodedEmail = req.decoded.email;
+
+      // if (email !== decodedEmail) {
+      //   return res.status(403).send({ message: "forbidden access" });
+      // }
+      const id = req.params.id;
+      const query = { _id: ObjectId(id) };
+      const booking = await bookingsCollection.findOne(query);
+      res.send(booking);
+    });
+
     //booking gulo post er janno
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
@@ -172,6 +202,41 @@ async function run() {
       const result = await bookingsCollection.insertOne(booking);
       res.send(result);
     });
+    //create-payment-intent related api
+    app.post("/create-payment-intent", async (req, res) => {
+      const booking = req.body;
+      const price = booking.price;
+      const amount = price * 100;
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        currency: "usd",
+        amount: amount,
+        payment_method_types: ["card"],
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
+    //payment related api
+    app.post("/payments", async (req, res) => {
+      const payment = req.body;
+      const result = await paymentsCollection.insertOne(payment);
+      const id = payment.bookingId;
+      const filter = { _id: ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          paid: true,
+          transactionId: payment.transactionId,
+        },
+      };
+
+      const updateResult = await bookingsCollection.updateOne(
+        filter,
+        updatedDoc
+      );
+      res.send(result);
+    });
+
     //jwt api
     app.get("/jwt", async (req, res) => {
       const email = req.query.email;
@@ -206,15 +271,15 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
-    //admin role bananor janno 208-219 & 200-206 verify jwt
-    app.put("/users/admin/:id", verifyJWT, async (req, res) => {
-      const decodedEmail = req.decoded.email;
-      const query = { email: decodedEmail };
-      const user = await usersCollection.findOne(query);
+    //admin role bananor janno 225-238(verifyAdmin korlam tai r ei coder darkar nai) & 217-223 verify jwt
+    app.put("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      // const decodedEmail = req.decoded.email;
+      // const query = { email: decodedEmail };
+      // const user = await usersCollection.findOne(query);
 
-      if (user?.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
-      }
+      // if (user?.role !== "admin") {
+      //   return res.status(403).send({ message: "forbidden access" });
+      // }
 
       const id = req.params.id;
       const filter = { _id: ObjectId(id) };
@@ -231,14 +296,37 @@ async function run() {
       );
       res.send(result);
     });
-    app.get("/doctorList", async (req, res) => {
+    //temporary to update price field on appointment options
+    // app.get("/addPrice", async (req, res) => {
+    //   const filter = {};
+    //   const options = { upsert: true };
+    //   const updatedDoc = {
+    //     $set: {
+    //       price: 100,
+    //     },
+    //   };
+    //   const result = await appointmentOptionCollection.updateMany(
+    //     filter,
+    //     updatedDoc,
+    //     options
+    //   );
+    //   res.send(result);
+    // });
+
+    app.get("/doctorList", verifyJWT, verifyAdmin, async (req, res) => {
       const query = {};
       const doctorList = await doctorsCollection.find(query).toArray();
       res.send(doctorList);
     });
-    app.post("/doctorList", async (req, res) => {
+    app.post("/doctorList", verifyJWT, verifyAdmin, async (req, res) => {
       const doctor = req.body;
       const result = await doctorsCollection.insertOne(doctor);
+      res.send(result);
+    });
+    app.delete("/doctorList/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params;
+      const filter = { _id: ObjectId(id) };
+      const result = await doctorsCollection.deleteOne(filter);
       res.send(result);
     });
   } finally {
